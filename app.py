@@ -132,10 +132,57 @@ bmr=10*weight+6.25*height-5*age+(5 if sex=="Masculino" else -161)
 factor={"Sedentário":1.2,"Básico":1.35,"Moderado":1.5,"Ativo":1.65,"Hiperativo":1.8}[activity]
 calories=bmr*factor+(150 if goal=="Ganho de massa muscular" else 0)
 st.subheader("2. Alimentos disponíveis")
+
+if "selected_foods" not in st.session_state:
+    st.session_state.selected_foods = {}
+
+show_raw = st.checkbox(
+    "Mostrar alimentos crus",
+    value=False,
+    help="Ative se você costuma pesar carnes e outros alimentos antes do preparo."
+)
 search=st.text_input("Pesquisar alimentos",placeholder="Ex.: ovo, frango, arroz, lentilha...")
 opts=food_rows(search)
-labels={f"{(r.get('food_name_pt') or r['food_name'])} — {r['food_key']}":r["food_key"] for r in opts}
-chosen=st.multiselect("Selecione os alimentos",list(labels)); keys=[labels[x] for x in chosen]
+
+def is_raw_food(row):
+    text=((row.get("food_name") or "")+" "+(row.get("food_name_pt") or "")).lower()
+    return any(term in text for term in (" raw", "cru", "uncooked", "não cozido"))
+
+if not show_raw:
+    opts=[r for r in opts if not is_raw_food(r)]
+
+if search.strip():
+    st.caption(f"Resultados para **{search.strip()}**")
+    for i,r in enumerate(opts[:30]):
+        label=r.get("food_name_pt") or r["food_name"]
+        c1,c2=st.columns([6,1])
+        c1.write(label)
+        already=r["food_key"] in st.session_state.selected_foods
+        if c2.button("✓" if already else "Adicionar",key=f"add_food_{r['food_key']}_{i}",disabled=already):
+            st.session_state.selected_foods[r["food_key"]]=label
+            st.rerun()
+else:
+    st.caption("Digite um alimento acima para pesquisar e adicionar.")
+
+st.markdown("#### Meus alimentos disponíveis")
+selected=st.session_state.selected_foods
+st.caption(f"**{len(selected)} alimento(s) selecionado(s)**")
+
+if selected:
+    for i,(key,label) in enumerate(list(selected.items())):
+        c1,c2=st.columns([6,1])
+        c1.write(f"• {label}")
+        if c2.button("Remover",key=f"remove_food_{key}_{i}"):
+            del st.session_state.selected_foods[key]
+            st.rerun()
+    if st.button("Limpar lista",key="clear_foods"):
+        st.session_state.selected_foods={}
+        st.rerun()
+else:
+    st.info("Nenhum alimento adicionado ainda.")
+
+keys=list(selected.keys())
+chosen=list(selected.values())
 st.info(f"Meta energética operacional estimada: **{calories:.0f} kcal/dia**.")
 if st.button("Calcular plano",type="primary",disabled=(len(keys)<5 or len(meals)!=nmeals)):
     foods=build_foods(keys,meals); targets=targets_for(sex,age,weight,calories,goal)
@@ -144,7 +191,7 @@ if st.button("Calcular plano",type="primary",disabled=(len(keys)<5 or len(meals)
     elapsed=time.perf_counter()-t0; status=result["status"]; plan=result.get("plan",{})
     totals=result.get("validation",{}).get("totals",{})
     try:
-        rid=save_run([{"food_key":k,"label":lab} for lab,k in zip(chosen,keys)],targets,plan,totals,status,elapsed)
+        rid=save_run([{"food_key":k,"label":selected[k]} for k in keys],targets,plan,totals,status,elapsed)
         st.session_state.last_run_id=rid
     except Exception as ex: st.warning(f"Cálculo concluído, mas registro falhou: {ex}")
     if status!="VALID": st.error("Não foi possível montar um plano válido com os alimentos selecionados.")
