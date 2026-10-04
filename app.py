@@ -78,17 +78,30 @@ if not st.session_state.user:
             try: setauth(signin(e,p)); st.rerun()
             except Exception: st.error("Não foi possível entrar. Confira e-mail e senha.")
     with b:
-        e=st.text_input("E-mail",key="re"); p1=st.text_input("Senha",type="password",key="rp1")
-        p2=st.text_input("Repita a senha",type="password",key="rp2")
-        if st.button("Criar cadastro"):
-            if len(p1)<8: st.error("Use pelo menos 8 caracteres.")
-            elif p1!=p2: st.error("As senhas não coincidem.")
-            else:
-                try:
-                    a=signup(e,p1)
-                    if a.session: setauth(a); st.rerun()
-                    else: st.success("Cadastro criado. Faça login.")
-                except Exception: st.error("Não foi possível criar o cadastro.")
+        with st.form("signup_form", clear_on_submit=False):
+            e=st.text_input("E-mail",key="re")
+            p1=st.text_input("Senha",type="password",key="rp1")
+            p2=st.text_input("Repita a senha",type="password",key="rp2")
+            submitted=st.form_submit_button("Criar cadastro")
+            if submitted:
+                email=e.strip().lower()
+                password=p1
+                if not email or "@" not in email:
+                    st.error("Informe um e-mail válido.")
+                elif len(password)<8:
+                    st.error(f"Use pelo menos 8 caracteres. A senha informada tem {len(password)}.")
+                elif password!=p2:
+                    st.error("As senhas não coincidem.")
+                else:
+                    try:
+                        a=signup(email,password)
+                        if a.session:
+                            setauth(a)
+                            st.rerun()
+                        else:
+                            st.success("Cadastro criado. Faça login.")
+                    except Exception as ex:
+                        st.error(f"Não foi possível criar o cadastro: {ex}")
     st.stop()
 
 st.sidebar.write(f"**Usuário:** {st.session_state.user.email}")
