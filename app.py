@@ -8,10 +8,11 @@ BASE=Path(__file__).parent
 FOOD_DB=BASE/"nutriflex_afcd_r3.sqlite"
 st.set_page_config(page_title="NutriFlex",page_icon="🥗",layout="wide")
 
-@st.cache_resource
-def get_sb():
-    return create_client(st.secrets["SUPABASE_URL"],st.secrets["SUPABASE_KEY"])
-sb=get_sb()
+if "_supabase_client" not in st.session_state:
+    st.session_state._supabase_client = create_client(
+        st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"]
+    )
+sb = st.session_state._supabase_client
 
 def signup(email,pw): return sb.auth.sign_up({"email":email.strip().lower(),"password":pw})
 def signin(email,pw): return sb.auth.sign_in_with_password({"email":email.strip().lower(),"password":pw})
@@ -37,12 +38,16 @@ def save_feedback(run_id,rating,ease,comments):
 
 def food_rows(search="",limit=250):
     con=sqlite3.connect(FOOD_DB); con.row_factory=sqlite3.Row
-    r=[dict(x) for x in con.execute("""SELECT food_key,food_name,classification FROM foods
-      WHERE lower(food_name) LIKE lower(?) ORDER BY food_name LIMIT ?""",(f"%{search}%",limit))]
+    q=f"%{search}%"
+    r=[dict(x) for x in con.execute("""SELECT food_key,food_name,food_name_pt,search_alias_pt,classification FROM foods
+      WHERE lower(food_name) LIKE lower(?)
+         OR lower(COALESCE(food_name_pt,'')) LIKE lower(?)
+         OR lower(COALESCE(search_alias_pt,'')) LIKE lower(?)
+      ORDER BY COALESCE(NULLIF(food_name_pt,''),food_name) LIMIT ?""",(q,q,q,limit))]
     con.close(); return r
 def food_record(key):
     con=sqlite3.connect(FOOD_DB); con.row_factory=sqlite3.Row
-    r=con.execute("""SELECT f.food_key,f.food_name,f.classification,n.* FROM foods f
+    r=con.execute("""SELECT f.food_key,f.food_name,f.food_name_pt,f.classification,n.* FROM foods f
       JOIN nutrients_per_100g n USING(food_key) WHERE f.food_key=?""",(key,)).fetchone()
     con.close(); return dict(r) if r else None
 def targets_for(sex,age,weight,calories,goal):
@@ -63,7 +68,7 @@ def build_foods(keys,meals):
     out=[]
     for k in keys:
         r=food_record(k); n={x:float(r[x]) for x in fs if r.get(x) is not None}
-        out.append(Food(r["food_name"],n,f"AFCD Release 3:{k}",tuple(meals),100,400,250,10))
+        out.append(Food(r.get("food_name_pt") or r["food_name"],n,f"AFCD Release 3:{k}",tuple(meals),100,400,250,10))
     return out
 
 st.title("🥗 NutriFlex — MVP de testes")
@@ -127,8 +132,9 @@ bmr=10*weight+6.25*height-5*age+(5 if sex=="Masculino" else -161)
 factor={"Sedentário":1.2,"Básico":1.35,"Moderado":1.5,"Ativo":1.65,"Hiperativo":1.8}[activity]
 calories=bmr*factor+(150 if goal=="Ganho de massa muscular" else 0)
 st.subheader("2. Alimentos disponíveis")
-search=st.text_input("Pesquisar alimentos AFCD",placeholder="Ex.: egg, chicken, rice, lentil...")
-opts=food_rows(search); labels={f"{r['food_name']} — {r['food_key']}":r["food_key"] for r in opts}
+search=st.text_input("Pesquisar alimentos",placeholder="Ex.: ovo, frango, arroz, lentilha...")
+opts=food_rows(search)
+labels={f"{(r.get('food_name_pt') or r['food_name'])} — {r['food_key']}":r["food_key"] for r in opts}
 chosen=st.multiselect("Selecione os alimentos",list(labels)); keys=[labels[x] for x in chosen]
 st.info(f"Meta energética operacional estimada: **{calories:.0f} kcal/dia**.")
 if st.button("Calcular plano",type="primary",disabled=(len(keys)<5 or len(meals)!=nmeals)):
