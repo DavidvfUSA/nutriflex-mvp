@@ -19,6 +19,10 @@ def signin(email,pw): return sb.auth.sign_in_with_password({"email":email.strip(
 def setauth(a):
     st.session_state.user=a.user; st.session_state.session=a.session
 def logout():
+    st.session_state.pop("selected_foods",None)
+    st.session_state.pop("_food_loaded_user",None)
+    st.session_state.pop("_last_report",None)
+    st.session_state.pop("_last_report_user",None)
     try: sb.auth.sign_out()
     finally: st.session_state.user=None; st.session_state.session=None
 def save_profile(row):
@@ -35,6 +39,35 @@ def save_feedback(run_id,rating,ease,comments):
     sb.table("feedback").insert({"user_id":str(st.session_state.user.id),
       "test_run_id":run_id,"plan_rating":rating,"ease_of_use_rating":ease,
       "comments":comments}).execute()
+
+def essential_rows():
+    with sqlite3.connect(FOOD_DB) as con:
+        con.row_factory=sqlite3.Row
+        return [dict(x) for x in con.execute("SELECT * FROM essential_foods ORDER BY category,name_pt")]
+
+def load_user_foods():
+    uid=str(st.session_state.user.id)
+    if st.session_state.get("_food_loaded_user")==uid:
+        return
+    r=sb.table("user_food_lists").select("selected_foods").eq("user_id",uid).limit(1).execute()
+    if r.data:
+        saved=r.data[0]["selected_foods"] or []
+        st.session_state.selected_foods={x["food_key"]:x["label"] for x in saved if isinstance(x,dict) and x.get("food_key") and x.get("label")}
+    else:
+        st.session_state.selected_foods={r["food_key"]:r["name_pt"] for r in essential_rows() if r["default_selected"]}
+    st.session_state._food_loaded_user=uid
+
+def persist_user_foods():
+    row={"user_id":str(st.session_state.user.id),"selected_foods":[{"food_key":k,"label":v} for k,v in st.session_state.selected_foods.items()]}
+    sb.table("user_food_lists").upsert(row,on_conflict="user_id").execute()
+
+def load_last_report():
+    uid=str(st.session_state.user.id)
+    if st.session_state.get("_last_report_user")==uid:
+        return
+    r=sb.table("test_runs").select("id,generated_plan,nutrient_totals,result_status,created_at").eq("user_id",uid).order("created_at",desc=True).limit(1).execute()
+    st.session_state._last_report=r.data[0] if r.data else None
+    st.session_state._last_report_user=uid
 
 def food_rows(search="",limit=250):
     con=sqlite3.connect(FOOD_DB); con.row_factory=sqlite3.Row
@@ -111,6 +144,13 @@ if not st.session_state.user:
 
 st.sidebar.write(f"**Usuário:** {st.session_state.user.email}")
 if st.sidebar.button("Sair"): logout(); st.rerun()
+try:
+    load_user_foods()
+    load_last_report()
+except Exception as ex:
+    st.error(f"Não foi possível carregar os dados salvos: {ex}. Execute primeiro o SQL de instalação.")
+    st.stop()
+
 st.subheader("1. Perfil")
 c1,c2,c3,c4=st.columns(4)
 sex=c1.selectbox("Sexo",["Masculino","Feminino"]); age=c2.number_input("Idade",18,90,39)
@@ -136,6 +176,21 @@ st.subheader("2. Alimentos disponíveis")
 if "selected_foods" not in st.session_state:
     st.session_state.selected_foods = {}
 
+with st.expander("Biblioteca Essencial — categorias e alimentos", expanded=False):
+    catalog=essential_rows()
+    categories=sorted({r["category"] for r in catalog})
+    category=st.selectbox("Categoria",categories)
+    for item in (r for r in catalog if r["category"]==category):
+        ca,cb=st.columns([6,1])
+        ca.write(item["name_pt"])
+        key=item["food_key"]
+        if cb.button("Adicionar",key=f"ess_{key}",disabled=key in st.session_state.selected_foods):
+            st.session_state.selected_foods[key]=item["name_pt"]
+            try: persist_user_foods()
+            except Exception as ex: st.error(f"Não foi possível salvar: {ex}")
+            else: st.rerun()
+
+
 show_raw = st.checkbox(
     "Mostrar alimentos crus",
     value=False,
@@ -160,7 +215,9 @@ if search.strip():
         already=r["food_key"] in st.session_state.selected_foods
         if c2.button("✓" if already else "Adicionar",key=f"add_food_{r['food_key']}_{i}",disabled=already):
             st.session_state.selected_foods[r["food_key"]]=label
-            st.rerun()
+            try: persist_user_foods()
+            except Exception as ex: st.error(f"Não foi possível salvar: {ex}")
+            else: st.rerun()
 else:
     st.caption("Digite um alimento acima para pesquisar e adicionar.")
 
@@ -174,12 +231,20 @@ if selected:
         c1.write(f"• {label}")
         if c2.button("Remover",key=f"remove_food_{key}_{i}"):
             del st.session_state.selected_foods[key]
-            st.rerun()
+            try: persist_user_foods()
+            except Exception as ex: st.error(f"Não foi possível salvar: {ex}")
+            else: st.rerun()
     if st.button("Limpar lista",key="clear_foods"):
         st.session_state.selected_foods={}
-        st.rerun()
+        try: persist_user_foods()
+        except Exception as ex: st.error(f"Não foi possível salvar: {ex}")
+        else: st.rerun()
 else:
     st.info("Nenhum alimento adicionado ainda.")
+
+if st.button("Salvar minha lista atual"):
+    try: persist_user_foods(); st.success("Lista salva na sua conta.")
+    except Exception as ex: st.error(f"Não foi possível salvar: {ex}")
 
 keys=list(selected.keys())
 chosen=list(selected.values())
@@ -193,6 +258,7 @@ if st.button("Calcular plano",type="primary",disabled=(len(keys)<5 or len(meals)
     try:
         rid=save_run([{"food_key":k,"label":selected[k]} for k in keys],targets,plan,totals,status,elapsed)
         st.session_state.last_run_id=rid
+        st.session_state._last_report={"id":rid,"generated_plan":plan,"nutrient_totals":totals,"result_status":status,"created_at":"Agora"}
     except Exception as ex: st.warning(f"Cálculo concluído, mas registro falhou: {ex}")
     if status!="VALID": st.error("Não foi possível montar um plano válido com os alimentos selecionados.")
     else:
@@ -205,6 +271,16 @@ if st.button("Calcular plano",type="primary",disabled=(len(keys)<5 or len(meals)
             v=totals.get(nutrient,0); ok=(t.minimum is None or v>=t.minimum-1e-6) and (t.maximum is None or v<=t.maximum+1e-6)
             rows.append({"Nutriente":nutrient,"Total":round(v,1),"Mínimo":t.minimum,"Máximo":t.maximum,"Status":"🟢" if ok else "🔴"})
         st.dataframe(rows,use_container_width=True,hide_index=True)
+
+last=st.session_state.get("_last_report")
+if last:
+    with st.expander("Último relatório salvo",expanded=False):
+        st.caption(f"Data: {last.get('created_at','')} — Situação: {last.get('result_status','')}")
+        for meal,items in (last.get("generated_plan") or {}).items():
+            st.markdown(f"**{meal}**")
+            for name,grams in items.items(): st.write(f"{name}: {grams:.0f} g")
+        st.write("Totais nutricionais:")
+        st.dataframe([{"Nutriente":k,"Total":round(v,2)} for k,v in (last.get("nutrient_totals") or {}).items()],hide_index=True)
 
 if st.session_state.get("last_run_id"):
     st.divider(); st.subheader("3. Avalie este teste")
