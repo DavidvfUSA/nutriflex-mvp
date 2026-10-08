@@ -3,6 +3,7 @@ import sqlite3, json, time
 from pathlib import Path
 from supabase import create_client
 from nutriflex_engine import Food, Target, PlanConfig, NutriFlexEngine, protein_target
+from nutriflex_daily import optimize_daily
 
 BASE=Path(__file__).parent
 FOOD_DB=BASE/"nutriflex_afcd_r3.sqlite"
@@ -249,28 +250,34 @@ if st.button("Salvar minha lista atual"):
 keys=list(selected.keys())
 chosen=list(selected.values())
 st.info(f"Meta energética operacional estimada: **{calories:.0f} kcal/dia**.")
-if st.button("Calcular plano",type="primary",disabled=(len(keys)<5 or len(meals)!=nmeals)):
-    foods=build_foods(keys,meals); targets=targets_for(sex,age,weight,calories,goal)
-    per=calories/len(meals); ranges={m:(per*.60,per*1.45) for m in meals}
-    t0=time.perf_counter(); result=NutriFlexEngine(foods,PlanConfig(tuple(meals),targets,ranges,.03)).solve()
-    elapsed=time.perf_counter()-t0; status=result["status"]; plan=result.get("plan",{})
-    totals=result.get("validation",{}).get("totals",{})
-    try:
-        rid=save_run([{"food_key":k,"label":selected[k]} for k in keys],targets,plan,totals,status,elapsed)
-        st.session_state.last_run_id=rid
-        st.session_state._last_report={"id":rid,"generated_plan":plan,"nutrient_totals":totals,"result_status":status,"created_at":"Agora"}
-    except Exception as ex: st.warning(f"Cálculo concluído, mas registro falhou: {ex}")
-    if status!="VALID": st.error("Não foi possível montar um plano válido com os alimentos selecionados.")
-    else:
-        st.success("Plano nutricional válido.")
-        for meal,items in plan.items():
-            st.markdown(f"### {meal}")
-            for name,g in items.items(): st.write(f"• {name}: **{g:.0f} g**")
-        rows=[]
-        for nutrient,t in targets.items():
-            v=totals.get(nutrient,0); ok=(t.minimum is None or v>=t.minimum-1e-6) and (t.maximum is None or v<=t.maximum+1e-6)
-            rows.append({"Nutriente":nutrient,"Total":round(v,1),"Mínimo":t.minimum,"Máximo":t.maximum,"Status":"🟢" if ok else "🔴"})
-        st.dataframe(rows,use_container_width=True,hide_index=True)
+st.subheader("3. Modo de cálculo")
+mode=st.radio("Selecione o módulo",["Otimizador de nutrientes — quantidades diárias","Planejador de refeições — em desenvolvimento"])
+if mode.startswith("Planejador"):
+    st.warning("Planejador temporariamente indisponível até a validação das três dietas. O algoritmo antigo não será usado para gerar refeições incoerentes.")
+else:
+    st.caption("As quantidades são totais diários; você ou um profissional podem distribuí-las nas refeições.")
+    if st.button("Otimizar quantidades diárias",type="primary",disabled=len(keys)<5):
+        foods=build_foods(keys,meals)
+        targets=targets_for(sex,age,weight,calories,goal)
+        t0=time.perf_counter()
+        result=optimize_daily(foods,targets)
+        elapsed=time.perf_counter()-t0
+        status=result["status"]
+        totals=result.get("validation",{}).get("totals",{})
+        daily=result.get("quantities",{})
+        plan={"Total diário (sem divisão por refeições)":daily}
+        try:
+            rid=save_run([{"food_key":k,"label":selected[k]} for k in keys],targets,plan,totals,status,elapsed)
+            st.session_state.last_run_id=rid
+            st.session_state._last_report={"id":rid,"generated_plan":plan,"nutrient_totals":totals,"result_status":status,"created_at":"Agora"}
+        except Exception as ex:
+            st.warning(f"Cálculo concluído, mas registro falhou: {ex}")
+        if status!="VALID":
+            st.error(result.get("reason","Não foi possível encontrar uma solução válida."))
+        else:
+            st.success("Quantidades diárias calculadas e verificadas. Isto não é um cardápio de refeições.")
+            st.dataframe([{"Alimento":k,"Quantidade diária (g)":v} for k,v in daily.items()],hide_index=True,use_container_width=True)
+            st.dataframe([{"Nutriente":k,"Total":round(totals.get(k,0),2),"Mínimo":t.minimum,"Máximo":t.maximum} for k,t in targets.items()],hide_index=True,use_container_width=True)
 
 last=st.session_state.get("_last_report")
 if last:
