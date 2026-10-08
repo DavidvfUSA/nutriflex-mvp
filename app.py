@@ -3,7 +3,7 @@ import sqlite3, json, time
 from pathlib import Path
 from supabase import create_client
 from nutriflex_engine import Food, Target, PlanConfig, NutriFlexEngine, protein_target
-from nutriflex_daily import optimize_daily, food_group
+from nutriflex_daily import optimize_daily, food_group, GROUPS
 
 BASE=Path(__file__).parent
 FOOD_DB=BASE/"nutriflex_afcd_r3.sqlite"
@@ -261,11 +261,21 @@ if mode.startswith("Planejador"):
     st.warning("Planejador temporariamente indisponível até a validação das três dietas. O algoritmo antigo não será usado para gerar refeições incoerentes.")
 else:
     st.caption("As quantidades são totais diários; você ou um profissional podem distribuí-las nas refeições.")
-    if st.button("Otimizar quantidades diárias",type="primary",disabled=len(keys)<5):
+    with st.expander("Configurar variedade por grupo",expanded=False):
+        st.caption("Mínimos são preferências flexíveis. Máximos são limites obrigatórios. Os valores representam alimentos distintos, não porções.")
+        group_ranges={}
+        for g,(label,default_min,default_max) in GROUPS.items():
+            left,right=st.columns(2)
+            minimum=left.number_input(f"{label} — mínimo",0,10,default_min,1,key=f"grp_min_{g}")
+            maximum=right.number_input(f"{label} — máximo",0,10,default_max,1,key=f"grp_max_{g}")
+            group_ranges[g]=(minimum,maximum)
+    invalid_ranges=[GROUPS[g][0] for g,(mn,mx) in group_ranges.items() if mn>mx]
+    if invalid_ranges:st.error("Mínimo maior que máximo: "+", ".join(invalid_ranges))
+    if st.button("Otimizar quantidades diárias",type="primary",disabled=(len(keys)<5 or bool(invalid_ranges))):
         foods=build_foods(keys,meals)
         targets=targets_for(sex,age,weight,calories,goal)
         t0=time.perf_counter()
-        result=optimize_daily(foods,targets,food_categories={r["food_key"]:r["category"] for r in essential_rows()})
+        result=optimize_daily(foods,targets,food_categories={r["food_key"]:r["category"] for r in essential_rows()},group_ranges=group_ranges)
         elapsed=time.perf_counter()-t0
         status=result["status"]
         totals=result.get("validation",{}).get("totals",{})
@@ -282,6 +292,7 @@ else:
         else:
             st.success("Quantidades diárias calculadas e verificadas. Isto não é um cardápio de refeições.")
             st.caption("Grupos representados: " + ", ".join(result.get("groups", [])))
+            st.dataframe([{"Grupo":label,"Utilizados":result.get("group_counts",{}).get(g,0),"Preferência mínima":group_ranges[g][0],"Máximo":group_ranges[g][1]} for g,(label,_,_) in GROUPS.items()],hide_index=True,use_container_width=True)
             for warning in result.get("warnings", []): st.warning(warning)
             st.dataframe([{"Alimento":k,"Quantidade diária (g)":v} for k,v in daily.items()],hide_index=True,use_container_width=True)
             st.dataframe([{"Nutriente":k,"Total":round(totals.get(k,0),2),"Mínimo":t.minimum,"Máximo":t.maximum} for k,t in targets.items()],hide_index=True,use_container_width=True)
