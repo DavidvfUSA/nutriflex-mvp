@@ -3,7 +3,7 @@ import sqlite3, json, time
 from pathlib import Path
 from supabase import create_client
 from nutriflex_engine import Food, Target, PlanConfig, NutriFlexEngine, protein_target
-from nutriflex_daily import optimize_daily
+from nutriflex_daily import optimize_daily, food_group
 
 BASE=Path(__file__).parent
 FOOD_DB=BASE/"nutriflex_afcd_r3.sqlite"
@@ -73,15 +73,16 @@ def load_last_report():
 def food_rows(search="",limit=250):
     con=sqlite3.connect(FOOD_DB); con.row_factory=sqlite3.Row
     q=f"%{search}%"
-    r=[dict(x) for x in con.execute("""SELECT food_key,food_name,food_name_pt,search_alias_pt,classification FROM foods
-      WHERE lower(food_name) LIKE lower(?)
-         OR lower(COALESCE(food_name_pt,'')) LIKE lower(?)
-         OR lower(COALESCE(search_alias_pt,'')) LIKE lower(?)
-      ORDER BY COALESCE(NULLIF(food_name_pt,''),food_name) LIMIT ?""",(q,q,q,limit))]
+    r=[dict(x) for x in con.execute("""SELECT f.food_key,f.food_name,f.food_name_pt,f.search_alias_pt,f.classification,e.name_pt AS curated_name FROM foods f LEFT JOIN essential_foods e ON e.food_key=f.food_key
+      WHERE lower(f.food_name) LIKE lower(?)
+         OR lower(COALESCE(f.food_name_pt,'')) LIKE lower(?)
+         OR lower(COALESCE(f.search_alias_pt,'')) LIKE lower(?)
+      ORDER BY COALESCE(e.name_pt,NULLIF(f.food_name_pt,''),f.food_name) LIMIT ?""",(q,q,q,limit))]
     con.close(); return r
 def food_record(key):
     con=sqlite3.connect(FOOD_DB); con.row_factory=sqlite3.Row
-    r=con.execute("""SELECT f.food_key,f.food_name,f.food_name_pt,f.classification,n.* FROM foods f
+    r=con.execute("""SELECT f.food_key,f.food_name,f.food_name_pt,f.classification, e.name_pt AS curated_name,n.* FROM foods f
+       LEFT JOIN essential_foods e ON e.food_key=f.food_key
       JOIN nutrients_per_100g n USING(food_key) WHERE f.food_key=?""",(key,)).fetchone()
     con.close(); return dict(r) if r else None
 def targets_for(sex,age,weight,calories,goal):
@@ -96,13 +97,17 @@ def targets_for(sex,age,weight,calories,goal):
       "sodium_mg":Target(None,2300),"zinc_mg":Target(11 if male else 8,40),
       "folate_ug":Target(400,None),"vitamin_c_mg":Target(90 if male else 75,2000),
       "vitamin_d_ug":Target(15,100)}
+def display_name(row):
+    """Use nomes homologados; preserve o original AFCD para itens sem revisão."""
+    return row.get("curated_name") or row.get("food_name_pt") or row["food_name"]
+
 def build_foods(keys,meals):
     fs=("energy_kcal","protein_g","fat_g","carb_g","fiber_g","calcium_mg","iron_mg",
         "magnesium_mg","potassium_mg","sodium_mg","zinc_mg","folate_ug","vitamin_c_mg","vitamin_d_ug")
     out=[]
     for k in keys:
         r=food_record(k); n={x:float(r[x]) for x in fs if r.get(x) is not None}
-        out.append(Food(r.get("food_name_pt") or r["food_name"],n,f"AFCD Release 3:{k}",tuple(meals),100,400,250,10))
+        out.append(Food(display_name(r),n,f"AFCD Release 3:{k}",tuple(meals),100,400,250,10))
     return out
 
 st.title("🥗 NutriFlex — MVP de testes")
@@ -210,7 +215,7 @@ if not show_raw:
 if search.strip():
     st.caption(f"Resultados para **{search.strip()}**")
     for i,r in enumerate(opts[:30]):
-        label=r.get("food_name_pt") or r["food_name"]
+        label=display_name(r)
         c1,c2=st.columns([6,1])
         c1.write(label)
         already=r["food_key"] in st.session_state.selected_foods
@@ -260,7 +265,7 @@ else:
         foods=build_foods(keys,meals)
         targets=targets_for(sex,age,weight,calories,goal)
         t0=time.perf_counter()
-        result=optimize_daily(foods,targets)
+        result=optimize_daily(foods,targets,food_categories={r["food_key"]:r["category"] for r in essential_rows()})
         elapsed=time.perf_counter()-t0
         status=result["status"]
         totals=result.get("validation",{}).get("totals",{})
@@ -276,6 +281,8 @@ else:
             st.error(result.get("reason","Não foi possível encontrar uma solução válida."))
         else:
             st.success("Quantidades diárias calculadas e verificadas. Isto não é um cardápio de refeições.")
+            st.caption("Grupos representados: " + ", ".join(result.get("groups", [])))
+            for warning in result.get("warnings", []): st.warning(warning)
             st.dataframe([{"Alimento":k,"Quantidade diária (g)":v} for k,v in daily.items()],hide_index=True,use_container_width=True)
             st.dataframe([{"Nutriente":k,"Total":round(totals.get(k,0),2),"Mínimo":t.minimum,"Máximo":t.maximum} for k,t in targets.items()],hide_index=True,use_container_width=True)
 
