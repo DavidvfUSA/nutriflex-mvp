@@ -5,6 +5,9 @@ from supabase import create_client
 from nutriflex_engine import Food, Target, PlanConfig, NutriFlexEngine, protein_target
 from nutriflex_daily import optimize_daily, food_group, GROUPS
 
+if not isinstance(GROUPS, dict) or not all(isinstance(v, (tuple, list)) and len(v) == 3 for v in GROUPS.values()):
+    raise RuntimeError("Versões incompatíveis: atualize app.py e nutriflex_daily.py juntos no GitHub e reinicie o aplicativo Streamlit.")
+
 BASE=Path(__file__).parent
 FOOD_DB=BASE/"nutriflex_afcd_r3.sqlite"
 st.set_page_config(page_title="NutriFlex",page_icon="🥗",layout="wide")
@@ -106,7 +109,10 @@ def build_foods(keys,meals):
         "magnesium_mg","potassium_mg","sodium_mg","zinc_mg","folate_ug","vitamin_c_mg","vitamin_d_ug")
     out=[]
     for k in keys:
-        r=food_record(k); n={x:float(r[x]) for x in fs if r.get(x) is not None}
+        r=food_record(k)
+        if r is None:
+            continue
+        n={x:float(r[x]) for x in fs if r.get(x) is not None}
         out.append(Food(display_name(r),n,f"AFCD Release 3:{k}",tuple(meals),100,400,250,10))
     return out
 
@@ -264,7 +270,8 @@ else:
     with st.expander("Configurar variedade por grupo",expanded=False):
         st.caption("Mínimos são preferências flexíveis. Máximos são limites obrigatórios. Os valores representam alimentos distintos, não porções.")
         group_ranges={}
-        for g,(label,default_min,default_max) in GROUPS.items():
+        for g, settings in GROUPS.items():
+            label,default_min,default_max=settings
             left,right=st.columns(2)
             minimum=left.number_input(f"{label} — mínimo",0,10,default_min,1,key=f"grp_min_{g}")
             maximum=right.number_input(f"{label} — máximo",0,10,default_max,1,key=f"grp_max_{g}")
@@ -292,7 +299,7 @@ else:
         else:
             st.success("Quantidades diárias calculadas e verificadas. Isto não é um cardápio de refeições.")
             st.caption("Grupos representados: " + ", ".join(result.get("groups", [])))
-            st.dataframe([{"Grupo":label,"Utilizados":result.get("group_counts",{}).get(g,0),"Preferência mínima":group_ranges[g][0],"Máximo":group_ranges[g][1]} for g,(label,_,_) in GROUPS.items()],hide_index=True,use_container_width=True)
+            st.dataframe([{"Grupo":settings[0],"Utilizados":result.get("group_counts",{}).get(g,0),"Preferência mínima":group_ranges[g][0],"Máximo":group_ranges[g][1]} for g,settings in GROUPS.items()],hide_index=True,use_container_width=True)
             for warning in result.get("warnings", []): st.warning(warning)
             st.dataframe([{"Alimento":k,"Quantidade diária (g)":v} for k,v in daily.items()],hide_index=True,use_container_width=True)
             st.dataframe([{"Nutriente":k,"Total":round(totals.get(k,0),2),"Mínimo":t.minimum,"Máximo":t.maximum} for k,t in targets.items()],hide_index=True,use_container_width=True)
